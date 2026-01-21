@@ -24,6 +24,12 @@ class GoldBot:
         self.magic = 100001
         self.uk_tz = pytz.timezone("Europe/London")
         self.debug_signal_lines = []
+        self.last_bullish_score = 0.0
+        self.last_bearish_score = 0.0
+        self.last_rejection_reasons = []
+        self.last_bullish_score = 0.0
+        self.last_bearish_score = 0.0
+        self.last_rejection_reasons = []
 
         
         # Risk management
@@ -178,11 +184,16 @@ class GoldBot:
         
         try:
             last_trade = datetime.fromisoformat(self.state["last_trade_time"])
+            # Convert to UK timezone if not already timezone-aware
+            if last_trade.tzinfo is None:
+                last_trade = self.uk_tz.localize(last_trade)
             elapsed = (self._get_uk_time() - last_trade).total_seconds()
             
             cooldown = self.loss_cooldown if self.state["last_result"] == "loss" else self.win_cooldown
             return elapsed >= cooldown
-        except:
+        except Exception as e:
+            # If there's any error parsing time, allow trading (fail open)
+            print(f"Warning: Error checking cooldown: {e}")
             return True
     
     def _get_market_data(self) -> Optional[pd.DataFrame]:
@@ -460,11 +471,19 @@ class GoldBot:
         #  - price in middle of Bollinger band
         #  - momentum flat
         if last['adx'] < 18 and in_bb_middle and abs(last['momentum']) < abs(prev['momentum']) * 0.5:
+            self.last_bullish_score = bullish_score
+            self.last_bearish_score = bearish_score
+            self.last_rejection_reasons = [f"Choppy market: ADX={last['adx']:.1f} < 18, low momentum"]
             self._debug_signal_state(df)
             return None
         
         # === DECISION (Lower threshold = more trades) ===
         min_score = 4.5  # Back to more active trading
+        
+        # Store scores for diagnostics
+        self.last_bullish_score = bullish_score
+        self.last_bearish_score = bearish_score
+        self.last_rejection_reasons = []
         
         if bullish_score >= min_score and bullish_score > bearish_score * 1.2:
             direction = "BUY"
@@ -473,6 +492,15 @@ class GoldBot:
             direction = "SELL"
             strength = min(bearish_score / 12, 1.0)
         else:
+            if bullish_score < min_score and bearish_score < min_score:
+                self.last_rejection_reasons.append(f"Scores too low: BUY={bullish_score:.2f}, SELL={bearish_score:.2f} (min {min_score})")
+            elif bullish_score >= min_score and bearish_score >= min_score:
+                if bullish_score <= bearish_score * 1.2 and bearish_score <= bullish_score * 1.2:
+                    self.last_rejection_reasons.append(f"No clear winner: BUY={bullish_score:.2f} vs SELL={bearish_score:.2f} (need 1.2x advantage)")
+            elif bullish_score >= min_score:
+                self.last_rejection_reasons.append(f"BUY score OK ({bullish_score:.2f}) but SELL too close ({bearish_score:.2f})")
+            else:
+                self.last_rejection_reasons.append(f"SELL score OK ({bearish_score:.2f}) but BUY too close ({bullish_score:.2f})")
             return None
         
         # === ANTI-LATE ENTRY FILTERS ===
@@ -482,17 +510,21 @@ class GoldBot:
         
         # If price moved up >0.15% in last 5 bars, don't buy (too late)
         if direction == "BUY" and price_change_5bars > 0.15:
+            self.last_rejection_reasons.append(f"Anti-late entry: Price moved up {price_change_5bars:.2f}% in last 5 bars")
             return None
         
         # If price moved down >0.15% in last 5 bars, don't sell (too late)
         if direction == "SELL" and price_change_5bars < -0.15:
+            self.last_rejection_reasons.append(f"Anti-late entry: Price moved down {abs(price_change_5bars):.2f}% in last 5 bars")
             return None
         
         # Don't trade at extreme BB positions (already moved too much)
         bb_position = (last['close'] - last['bb_lower']) / (last['bb_upper'] - last['bb_lower'])
         if direction == "BUY" and bb_position > 0.8:  # Price too high in BB
+            self.last_rejection_reasons.append(f"BB position too high: {bb_position:.2%} (max 80%)")
             return None
         if direction == "SELL" and bb_position < 0.2:  # Price too low in BB
+            self.last_rejection_reasons.append(f"BB position too low: {bb_position:.2%} (min 20%)")
             return None
         
         # Check if momentum is still building (not exhausted)
@@ -502,10 +534,12 @@ class GoldBot:
             if direction == "BUY":
                 bullish_score *= 0.7
                 if bullish_score < min_score:
+                    self.last_rejection_reasons.append(f"Momentum weakening: BUY score reduced to {bullish_score:.2f} < {min_score}")
                     return None
             else:
                 bearish_score *= 0.7
                 if bearish_score < min_score:
+                    self.last_rejection_reasons.append(f"Momentum weakening: SELL score reduced to {bearish_score:.2f} < {min_score}")
                     return None
         
         # === SPREAD FILTER ===
@@ -576,6 +610,7 @@ class GoldBot:
             account_equity=acc.equity,
         )
         if lot is None:
+            self.last_rejection_reasons.append("Position sizing failed (lot calculation returned None - check risk limits)")
             return None
         
         return TradeSignal(
@@ -691,6 +726,38 @@ class GoldBot:
             lines.append(f"{'✔' if v else '✖'} {k}")
 
         self.debug_signal_lines = lines
+    
+    def _log_signal_rejection_reason(self, df: pd.DataFrame):
+        """Enhanced logging to show why signal was rejected"""
+        if len(df) < 100:
+            return
+        
+        # Check spread
+        spread_pts = self._current_spread_points()
+        
+        # Add stored rejection reasons
+        if self.last_rejection_reasons:
+            self.debug_signal_lines.extend([
+                "",
+                "REJECTION REASONS:"
+            ])
+            for reason in self.last_rejection_reasons:
+                self.debug_signal_lines.append(f"  ✖ {reason}")
+        
+        # Check spread separately (it's checked early in the flow)
+        if spread_pts is not None and spread_pts > self.max_spread_points:
+            if "REJECTION REASONS:" not in '\n'.join(self.debug_signal_lines):
+                self.debug_signal_lines.extend([
+                    "",
+                    "REJECTION REASONS:"
+                ])
+            self.debug_signal_lines.append(f"  ✖ Spread too high: {spread_pts:.1f} pts (max {self.max_spread_points})")
+        
+        # Always show current scores and spread
+        min_score = 4.5
+        if spread_pts is not None:
+            self.debug_signal_lines.append(f"\nSpread: {spread_pts:.1f} pts (max {self.max_spread_points})")
+        self.debug_signal_lines.append(f"BUY Score: {self.last_bullish_score:.2f} | SELL Score: {self.last_bearish_score:.2f} (need ≥{min_score})")
 
     def _place_trade(self, signal: TradeSignal):
         info = mt5.symbol_info(self.symbol)
@@ -789,7 +856,7 @@ class GoldBot:
 
         entry_time = self._position_cache[pos.ticket].get("entry_time")
         if entry_time:
-            age_min = (datetime.now() - entry_time).total_seconds() / 60
+            age_min = (self._get_uk_time() - entry_time).total_seconds() / 60
 
             if age_min >= self.time_decay_minutes:
                 # For XAUUSD on Vantage: 1 point == 0.01, so 150 points == $1.50 move.
@@ -904,7 +971,7 @@ class GoldBot:
                         self._position_cache[pos.ticket] = {
                             "peak_pnl_pct": pnl_pct,
                             "max_progress": 0.0,
-                            "entry_time": datetime.now()
+                            "entry_time": self._get_uk_time()
                         }
 
                     
@@ -1042,6 +1109,24 @@ class GoldBot:
                 else:
                     if market_status == "ACTIVE":
                         output.append(f"\nStatus   │ SCANNING FOR SIGNALS...")
+                        
+                        # Show daily stats
+                        if self.state['daily_trades'] > 0:
+                            output.append(f"Daily    │ Trades: {self.state['daily_trades']}/{self.max_daily_trades} │ P/L: £{self.state['day_pnl']:+.2f} ({self.state['day_pnl_pct']:+.2f}%)")
+                        
+                        # Show cooldown if active
+                        if not self._can_trade():
+                            try:
+                                last_trade = datetime.fromisoformat(self.state["last_trade_time"])
+                                if last_trade.tzinfo is None:
+                                    last_trade = self.uk_tz.localize(last_trade)
+                                elapsed = (self._get_uk_time() - last_trade).total_seconds()
+                                cooldown = self.loss_cooldown if self.state.get("last_result") == "loss" else self.win_cooldown
+                                remaining = max(0, int(cooldown - elapsed))
+                                if remaining > 0:
+                                    output.append(f"Cooldown │ {remaining}s remaining ({self.state.get('last_result', 'unknown').upper()})")
+                            except:
+                                pass
 
                         if self.debug_signal_lines:
                             output.append(f"\n{'─'*70}")
@@ -1202,7 +1287,10 @@ class GoldBot:
                     self._place_trade(signal)
                     time_module.sleep(2)
                 else:
+                    # Enhanced diagnostics when no signal
                     self._debug_signal_state(df)
+                    # Also log why signal was rejected
+                    self._log_signal_rejection_reason(df)
                     time_module.sleep(3)
 
                 
