@@ -46,6 +46,7 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
 - **Python 3.8 or higher** - [Download Python](https://www.python.org/downloads/)
 - **MetaTrader 5 platform** - [Download MT5](https://www.metatrader5.com/)
 - **Active MT5 trading account** (demo or live)
+- **Algo Trading active with DLL imports allowed in MT5**
 
 ## 🚀 Quick Start (Recommended)
 
