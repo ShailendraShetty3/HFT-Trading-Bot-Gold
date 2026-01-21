@@ -301,8 +301,6 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
 ---
 
-**Made with ❤️ for algorithmic traders**
-
 *Remember: Past performance is not indicative of future results. Trade responsibly.*
 
 ---
