@@ -4,8 +4,6 @@ import numpy as np
 from datetime import datetime, time, timedelta
 import time as time_module
 import pytz
-import json
-import os
 import sys
 from dataclasses import dataclass
 from typing import Optional, Literal
@@ -28,13 +26,26 @@ class GoldBot:
         self.debug_signal_lines = []
 
         
-        # Risk management - Lower lot sizes for more aggressive trading
+        # Risk management
+        # NOTE: Position sizing is computed from MT5 tick_value/tick_size so risk stays consistent,
+        # especially on small accounts (e.g., £100).
         self.base_risk_pct = 0.25
         self.max_risk_pct = 0.6
         self.min_lot = 0.01
         self.max_lot = 0.5
+        # Hard safety cap: if the smallest allowed lot would risk more than this % of equity, skip.
+        # Tuned for brokers like Vantage where XAUUSD min lot is 0.01 and tick economics are sizable.
+        self.max_single_trade_risk_pct_cap = 1.5
         self.tp_compression_min = 0.35
         self.tp_compression_max = 0.55
+
+        # Execution / spread controls
+        # Max allowed spread in points (XAUUSD on Vantage: 1 point == 0.01).
+        # Example: 25 points == $0.25 spread. Tune based on your usual live/demo spread.
+        self.max_spread_points = 25
+        # Price slippage tolerance (points) for market orders.
+        self.max_price_deviation_points = 20
+
         self.time_decay_minutes = 10
         self.min_progress_after_decay = 0.15
 
@@ -48,55 +59,45 @@ class GoldBot:
         self.win_cooldown = 20
         self.loss_cooldown = 45
         
-        # State management
-        self.state_file = "bot_state_v3.json"
-        self.state = self._load_state()
+        # State management (runtime only; no JSON persistence)
+        self.state = self._init_state()
         
         # Position tracking
         self._position_cache = {}
-        self._processed_deals = set()
-        self._session_deals = set()
+
+    def _price_to_points(self, price_delta: float) -> float:
+        """Convert a price delta to 'points' using the symbol's point size (correct for XAUUSD digits)."""
+        info = mt5.symbol_info(self.symbol)
+        point = float(getattr(info, "point", 0.0) or 0.0) if info else 0.0
+        if point <= 0:
+            # Safe fallback: treat price delta as points (won't be accurate but avoids crashing)
+            return float(price_delta)
+        return float(price_delta) / point
+
+    def _current_spread_points(self) -> Optional[float]:
+        """Return current spread in symbol points, or None if tick/symbol info missing."""
+        info = mt5.symbol_info(self.symbol)
+        tick = mt5.symbol_info_tick(self.symbol)
+        if not info or not tick:
+            return None
+        point = float(getattr(info, "point", 0.0) or 0.0)
+        if point <= 0:
+            return None
+        spread_price = float(tick.ask) - float(tick.bid)
+        return spread_price / point
         
-    def _load_state(self) -> dict:
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, "r") as f:
-                    state = json.load(f)
-                    # Ensure all required fields exist
-                    required_fields = {
-                        "starting_balance": 0,
-                        "daily_trades": 0,
-                        "wins": 0,
-                        "losses": 0,
-                        "profit": 0.0,
-                        "last_trade_time": None,
-                        "last_result": None,
-                        "trading_day": None
-                    }
-                    for key, default in required_fields.items():
-                        if key not in state:
-                            state[key] = default
-                    return state
-            except:
-                pass
-        
+    def _init_state(self) -> dict:
+        # Kept minimal on purpose: we only store what the bot uses for flow control and daily limits.
         return {
-            "starting_balance": 0,
+            "starting_balance": 0.0,
             "daily_trades": 0,
-            "wins": 0,
-            "losses": 0,
             "profit": 0.0,
             "last_trade_time": None,
             "last_result": None,
-            "trading_day": None
+            "trading_day": None,
+            "day_pnl": 0.0,
+            "day_pnl_pct": 0.0,
         }
-    
-    def _save_state(self):
-        try:
-            with open(self.state_file, "w") as f:
-                json.dump(self.state, f, indent=2)
-        except Exception as e:
-            print(f"Error saving state: {e}")
     
     def _reset_daily_stats(self):
         uk_now = self._get_uk_time()
@@ -111,8 +112,6 @@ class GoldBot:
             self.state.update({
                 "starting_balance": acc.equity if acc else self.state.get("starting_balance", 0),
                 "daily_trades": 0,
-                "wins": 0,
-                "losses": 0,
                 "profit": 0.0,
                 "day_pnl": 0.0,
                 "day_pnl_pct": 0.0,
@@ -120,7 +119,6 @@ class GoldBot:
                 "last_result": None,
                 "trading_day": current_day
             })
-            self._save_state()
             # Don't clear these anymore - we recalculate from MT5 history
             # self._processed_deals.clear()
             self._position_cache.clear()
@@ -456,6 +454,14 @@ class GoldBot:
         if in_bb_middle and not strong_trend:
             bullish_score *= 0.8
             bearish_score *= 0.8
+
+        # Hard block for super-choppy/noise conditions:
+        #  - ADX very low
+        #  - price in middle of Bollinger band
+        #  - momentum flat
+        if last['adx'] < 18 and in_bb_middle and abs(last['momentum']) < abs(prev['momentum']) * 0.5:
+            self._debug_signal_state(df)
+            return None
         
         # === DECISION (Lower threshold = more trades) ===
         min_score = 4.5  # Back to more active trading
@@ -502,8 +508,36 @@ class GoldBot:
                 if bearish_score < min_score:
                     return None
         
-        # === POSITION SIZING ===
-        atr = last['atr']
+        # === SPREAD FILTER ===
+        spread_pts = self._current_spread_points()
+        if spread_pts is not None and spread_pts > self.max_spread_points:
+            # Too expensive spread right now – skip this bar.
+            self.debug_signal_lines = [
+                "SIGNAL CHECK (NO TRADE)",
+                f"✖ Spread too high: {spread_pts:.1f} pts (max {self.max_spread_points})",
+            ]
+            return None
+
+        # === POSITION SIZING / SL-TP (with higher-timeframe ATR blend) ===
+        atr_m5 = last['atr']
+        # Approximate a higher-timeframe ATR (M15) from existing M5 data
+        try:
+            df_htf = (
+                df.set_index("time")[["high", "low", "close"]]
+                .resample("15T")
+                .agg({"high": "max", "low": "min", "close": "last"})
+                .dropna()
+            )
+            high_low_htf = df_htf['high'] - df_htf['low']
+            high_close_htf = abs(df_htf['high'] - df_htf['close'].shift())
+            low_close_htf = abs(df_htf['low'] - df_htf['close'].shift())
+            tr_htf = pd.concat([high_low_htf, high_close_htf, low_close_htf], axis=1).max(axis=1)
+            atr_htf = tr_htf.rolling(14).mean().iloc[-1]
+        except Exception:
+            atr_htf = atr_m5
+
+        # Blend intraday ATR with higher-timeframe ATR to avoid ultra-tight stops in noisy periods.
+        atr = max(atr_m5, float(atr_htf) * 0.4)
         entry = tick.ask if direction == "BUY" else tick.bid
         
         # Dynamic SL/TP based on strength and trend
@@ -532,30 +566,17 @@ class GoldBot:
         if not acc:
             return None
         
-        risk_pct = self.base_risk_pct + (strength * (self.max_risk_pct - self.base_risk_pct))
-        
-        # Adjust based on win rate
-        if self.state['daily_trades'] > 5:
-            win_rate = self.state['wins'] / self.state['daily_trades']
-            if win_rate > 0.60:
-                risk_pct *= 1.15
-            elif win_rate < 0.40:
-                risk_pct *= 0.75
-        
-        # Adjust based on current P/L
-        if self.state['starting_balance'] > 0:
-            current_pnl_pct = (self.state['profit'] / self.state['starting_balance']) * 100
-            if current_pnl_pct < -5:
-                risk_pct *= 0.6
-            elif current_pnl_pct > 10:
-                risk_pct *= 1.2
-        
-        lot = (acc.equity * (risk_pct / 100)) / (sl_distance * 100)
-        lot = max(self.min_lot, min(round(lot, 2), self.max_lot))
-        broker_min_lot = mt5.symbol_info(self.symbol).volume_min
-        lot = max(broker_min_lot, lot)
-        
-        # Account-based lot limits (safer for all balances)
+        risk_pct = self._risk_pct_for_equity(acc.equity, strength)
+        risk_money = acc.equity * (risk_pct / 100.0)
+
+        lot = self._calc_lot_from_risk(
+            entry_price=entry,
+            stop_loss=sl,
+            risk_money=risk_money,
+            account_equity=acc.equity,
+        )
+        if lot is None:
+            return None
         
         return TradeSignal(
             direction=direction,
@@ -566,6 +587,80 @@ class GoldBot:
             take_profit=tp,
             lot_size=lot
         )
+
+    def _risk_pct_for_equity(self, equity: float, strength: float) -> float:
+        """
+        Risk scales with signal strength and also scales down on small accounts,
+        so a £100 account doesn't get over-levered by minimum lot constraints.
+        """
+        strength = max(0.0, min(float(strength), 1.0))
+        base = self.base_risk_pct + (strength * (self.max_risk_pct - self.base_risk_pct))
+
+        # Scale down risk for small accounts, approach 1.0 at ~£500+
+        # (sqrt curve: gentle on mid accounts, protective on tiny accounts)
+        if equity <= 0:
+            return base
+        scale = min(1.0, max(0.25, (equity / 500.0) ** 0.5))
+        return base * scale
+
+    def _calc_lot_from_risk(
+        self,
+        entry_price: float,
+        stop_loss: float,
+        risk_money: float,
+        account_equity: float,
+    ) -> Optional[float]:
+        """
+        Convert intended £ risk into lots using MT5 symbol tick_value/tick_size.
+        Returns None when sizing is impossible or would exceed risk due to min lot.
+        """
+        info = mt5.symbol_info(self.symbol)
+        if not info:
+            return None
+
+        sl_dist = abs(float(entry_price) - float(stop_loss))
+        if sl_dist <= 0 or risk_money <= 0:
+            return None
+
+        tick_size = float(getattr(info, "trade_tick_size", 0.0) or 0.0)
+        tick_value = float(getattr(info, "trade_tick_value", 0.0) or 0.0)
+        if tick_size <= 0 or tick_value <= 0:
+            # Fallback: do not trade if broker doesn't provide economics (safer than guessing wrong).
+            return None
+
+        # £ per 1.0 price-unit move, per 1 lot
+        value_per_price_unit_per_lot = tick_value / tick_size
+        risk_per_lot = sl_dist * value_per_price_unit_per_lot
+        if risk_per_lot <= 0:
+            return None
+
+        raw_lot = risk_money / risk_per_lot
+
+        # Clamp to broker constraints
+        vol_min = float(getattr(info, "volume_min", self.min_lot) or self.min_lot)
+        vol_max = float(getattr(info, "volume_max", self.max_lot) or self.max_lot)
+        vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
+
+        # Also respect bot caps
+        vol_min = max(vol_min, self.min_lot)
+        vol_max = min(vol_max, self.max_lot)
+        if vol_max < vol_min:
+            return None
+
+        # Round down to step to avoid accidentally exceeding risk
+        stepped = np.floor(raw_lot / vol_step) * vol_step
+        lot = float(max(vol_min, min(stepped, vol_max)))
+
+        # Compute actual risk for the final lot size
+        actual_risk = lot * risk_per_lot
+
+        # Absolute safety: never allow a single trade to risk more than the cap (esp. when min lot binds)
+        if account_equity > 0:
+            risk_pct_actual = (actual_risk / account_equity) * 100.0
+            if risk_pct_actual > self.max_single_trade_risk_pct_cap:
+                return None
+
+        return round(lot, 2)
     
     def _debug_signal_state(self, df: pd.DataFrame):
         last = df.iloc[-1]
@@ -601,26 +696,49 @@ class GoldBot:
         info = mt5.symbol_info(self.symbol)
         if not info:
             return
+
+        tick = mt5.symbol_info_tick(self.symbol)
+        if not tick:
+            return
+
+        # Use the latest prices from tick to reduce slippage vs the analysed bar
+        entry_price = tick.ask if signal.direction == "BUY" else tick.bid
+
+        # Convert max_price_deviation_points to price units for MT5 deviation
+        point = float(getattr(info, "point", 0.0) or 0.0)
+        deviation_points = int(self.max_price_deviation_points)
+        deviation_price = deviation_points * point if point > 0 else 0.0
         
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
             "volume": signal.lot_size,
             "type": mt5.ORDER_TYPE_BUY if signal.direction == "BUY" else mt5.ORDER_TYPE_SELL,
-            "price": signal.entry_price,
+            "price": entry_price,
             "sl": round(signal.stop_loss, info.digits),
             "tp": round(signal.take_profit, info.digits),
             "magic": self.magic,
             "comment": f"Elite_{signal.direction}_{int(signal.strength*100)}",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC
+            "type_filling": mt5.ORDER_FILLING_IOC,
+            "deviation": deviation_points,
         }
-        
+
+        # Basic retry on requotes / slight price changes
         result = mt5.order_send(request)
+        if result and result.retcode in (
+            mt5.TRADE_RETCODE_REQUOTE,
+            mt5.TRADE_RETCODE_PRICE_CHANGED,
+        ):
+            # Refresh tick and try once more with updated price
+            tick_retry = mt5.symbol_info_tick(self.symbol)
+            if tick_retry:
+                request["price"] = tick_retry.ask if signal.direction == "BUY" else tick_retry.bid
+                result = mt5.order_send(request)
+
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
             self.state["last_trade_time"] = self._get_uk_time().isoformat()
             self.debug_signal_lines = []
-            self._save_state()
     
     def _should_emergency_exit(self, pos, current_pnl_pct: float, peak_pnl_pct: float) -> tuple[bool, str]:
         if pos.type == mt5.POSITION_TYPE_BUY:
@@ -648,38 +766,45 @@ class GoldBot:
 
         if pos.type == mt5.POSITION_TYPE_BUY:
             progress = (current - entry) / (tp - entry)
-            pips_profit = (current - entry) * 10000
+            points_profit = self._price_to_points(current - entry)
         else:
             progress = (entry - current) / (entry - tp)
-            pips_profit = (entry - current) * 10000
+            points_profit = self._price_to_points(entry - current)
 
         progress = max(0.0, min(progress, 1.2))
 
         cache = self._position_cache.setdefault(pos.ticket, {})
-        max_pips = cache.get("max_pips", pips_profit)
+        max_points = cache.get("max_points", points_profit)
+        max_progress = cache.get("max_progress", progress)
 
-        if pips_profit > max_pips:
-            cache["max_pips"] = pips_profit
-            max_pips = pips_profit
+        if points_profit > max_points:
+            cache["max_points"] = points_profit
+            max_points = points_profit
 
-        pips_retrace = max_pips - pips_profit
+        if progress > max_progress:
+            cache["max_progress"] = progress
+            max_progress = progress
+
+        points_retrace = max_points - points_profit
 
         entry_time = self._position_cache[pos.ticket].get("entry_time")
         if entry_time:
             age_min = (datetime.now() - entry_time).total_seconds() / 60
 
             if age_min >= self.time_decay_minutes:
-                if pips_profit >= 15:
+                # For XAUUSD on Vantage: 1 point == 0.01, so 150 points == $1.50 move.
+                if points_profit >= 150:
                     return True, "TimeDecay"
 
-        if max_pips >= 80 and pips_retrace >= 15:
-            return True, "Trail_80pips"
-        if max_pips >= 50 and pips_retrace >= 12:
-            return True, "Trail_50pips"
-        if max_pips >= 30 and pips_retrace >= 10:
-            return True, "Trail_30pips"
-        if max_pips >= 20 and pips_retrace >= 8:
-            return True, "Trail_20pips"
+        # Trailing thresholds expressed in POINTS (not FX pips).
+        if max_points >= 800 and points_retrace >= 150:
+            return True, "Trail_800pts"
+        if max_points >= 500 and points_retrace >= 120:
+            return True, "Trail_500pts"
+        if max_points >= 300 and points_retrace >= 100:
+            return True, "Trail_300pts"
+        if max_points >= 200 and points_retrace >= 80:
+            return True, "Trail_200pts"
 
         return False, ""
     def _sync_deals_to_state(self):
@@ -704,8 +829,6 @@ class GoldBot:
             
             # Reset tracking - recalculate from scratch each time
             daily_profit = 0.0
-            daily_wins = 0
-            daily_losses = 0
             daily_trades = 0
             processed_positions = set()
             last_deal_time = None
@@ -728,12 +851,10 @@ class GoldBot:
                     # Accumulate profit
                     daily_profit += deal.profit
                     
-                    # Count wins/losses and track result
+                    # Track last result for cooldown logic
                     if deal.profit > 0:
-                        daily_wins += 1
                         last_deal_result = "win"
                     elif deal.profit < 0:
-                        daily_losses += 1
                         last_deal_result = "loss"
                     
                     daily_trades += 1
@@ -745,8 +866,6 @@ class GoldBot:
             
             # Update state with recalculated values
             self.state['profit'] = daily_profit
-            self.state['wins'] = daily_wins
-            self.state['losses'] = daily_losses
             self.state['daily_trades'] = daily_trades
             
             # Update last trade time and result ONLY if we found deals
@@ -760,8 +879,7 @@ class GoldBot:
                 self.state['day_pnl_pct'] = (daily_profit / self.state['starting_balance']) * 100
             else:
                 self.state['day_pnl_pct'] = 0
-            
-            self._save_state()
+            # No JSON persistence by design
             
         except Exception as e:
             print(f"Error syncing deals: {e}")
@@ -956,26 +1074,45 @@ class GoldBot:
         
         if not symbol_info.visible:
             mt5.symbol_select(self.symbol, True)
+            symbol_info = mt5.symbol_info(self.symbol)
         
         acc = mt5.account_info()
         if not acc:
             print("Failed to get account info")
             mt5.shutdown()
             return
+
+        # One-time broker/symbol diagnostics (helps tune risk sizing for your broker)
+        try:
+            info = mt5.symbol_info(self.symbol)
+            print("\n" + "-" * 70)
+            print(f"Broker diagnostics for {self.symbol}")
+            print(f"Server/Currency │ {getattr(acc, 'server', '?')} │ {getattr(acc, 'currency', '?')}")
+            if info:
+                print(
+                    "Tick/Trade │ "
+                    f"tick_size={getattr(info, 'trade_tick_size', None)} │ "
+                    f"tick_value={getattr(info, 'trade_tick_value', None)} │ "
+                    f"contract_size={getattr(info, 'trade_contract_size', None)}"
+                )
+                print(
+                    "Volume     │ "
+                    f"min={getattr(info, 'volume_min', None)} │ "
+                    f"step={getattr(info, 'volume_step', None)} │ "
+                    f"max={getattr(info, 'volume_max', None)}"
+                )
+            print("-" * 70 + "\n")
+        except Exception as _e:
+            pass
         
         if acc.equity < 50:
             print("\n" + "="*70)
             print("WARNING: Account equity below £50 minimum recommended")
-            print("Consider depositing more or using a demo account")
+            print("Bot will continue but will aggressively downscale risk and may skip trades due to min lot risk.")
             print("="*70)
-            response = input("\nContinue anyway? (yes/no): ")
-            if response.lower() != 'yes':
-                mt5.shutdown()
-                return
         
         if self.state["starting_balance"] == 0:
             self.state["starting_balance"] = acc.equity
-            self._save_state()
         
         print("\n" + "="*70)
         print("GOLD TRADING BOT INITIALIZED".center(70))

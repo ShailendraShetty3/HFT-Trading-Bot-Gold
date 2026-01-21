@@ -22,15 +22,16 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
   - Candle pattern recognition (Hammer, Shooting Star)
 
 - **Intelligent Risk Management**
-  - Dynamic position sizing based on account equity
-  - Adaptive stop-loss and take-profit levels
+  - Dynamic position sizing based on account equity (tick_value/tick_size aware)
+  - Small-account safety cap when broker min-lot would over-risk
+  - Adaptive stop-loss and take-profit levels with higher-timeframe ATR blend
   - Maximum daily trade limits
   - Profit target and drawdown protection
-  - Win-rate based risk adjustment
 
 - **Smart Entry/Exit Logic**
   - Anti-late-entry filters (no chasing moves)
-  - Trailing stop system based on TP progress
+  - Spread filter (skips wide spreads) and point-correct trailing logic for XAUUSD
+  - Trailing stop system based on TP progress and peak tracking
   - Emergency exit conditions
   - Time-decay exits for stale positions
   - Cooldown periods after wins/losses
@@ -54,7 +55,7 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
 
 1. **Download the latest release**
    - Go to the [Releases page](../../releases)
-   - Download `Gold Trading Bot.zip` from the latest release
+   - Download `Gold Trading Bot.zip` (or `Source code (zip)`) from the latest release (v1.1.0 or newer)
    - Extract the ZIP file to your desired location
 
 2. **Install MetaTrader 5**
@@ -76,9 +77,9 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
 1. **Download the latest release**
    ```bash
    # Visit releases page and download, or use wget:
-   wget https://github.com/Morticuss/Gold-trading-bot/archive/refs/tags/v1.0.0.zip
-   unzip v1.0.0.zip
-   cd gold-trading-bot-1.0.0
+   wget https://github.com/Morticuss/Gold-trading-bot/archive/refs/tags/v1.1.0.zip
+   unzip v1.1.0.zip
+   cd gold-trading-bot-1.1.0
    ```
 
 2. **Install dependencies**
@@ -112,6 +113,9 @@ self.base_risk_pct = 0.25        # Base risk per trade
 self.max_risk_pct = 0.6          # Maximum risk for high-confidence trades
 self.min_lot = 0.01              # Minimum lot size
 self.max_lot = 0.5               # Maximum lot size
+self.max_single_trade_risk_pct_cap = 1.5  # Skip if min lot would risk above this %
+self.max_spread_points = 25       # Skip trades when spread (points) exceeds this
+self.max_price_deviation_points = 20  # Slippage tolerance for order execution
 
 # Daily Limits
 self.daily_profit_target = 20.0  # Target profit %
@@ -153,15 +157,16 @@ The bot uses a multi-factor scoring system to identify high-probability trades:
 ## 📈 Position Management
 
 ### Stop Loss & Take Profit
-- Dynamic SL based on ATR (0.8-1.2x)
-- TP ratio: 1.8-2.5x risk (based on signal strength)
-- TP compression for realism (35-55%)
+- Dynamic SL uses intraday ATR with a higher-timeframe ATR blend to avoid ultra-tight stops
+- TP ratio scales with signal strength (and TP compression 35-55% for realism)
 
 ### Trailing System
-- 80% TP progress → 10% retrace closes
-- 60% TP progress → 15% retrace closes
-- 40% TP progress → 20% retrace closes
-- 30% TP progress → 25% retrace closes
+- Point-correct trailing for gold (XAUUSD, point=0.01):
+  - ≥800 pts, retrace ≥150 pts closes
+  - ≥500 pts, retrace ≥120 pts closes
+  - ≥300 pts, retrace ≥100 pts closes
+  - ≥200 pts, retrace ≥80 pts closes
+- Time-decay exit after 10 minutes if progress stalls and profit ≥150 pts
 
 ### Emergency Exits
 - Rapid loss > 0.6% of account
@@ -184,7 +189,6 @@ gold-trading-bot/
 ├── README.md               # This file
 ├── LICENSE                 # MIT License
 ├── .gitignore             # Git ignore rules
-└── bot_state_v3.json      # State file (auto-generated)
 ```
 
 ## 🐛 Troubleshooting
@@ -221,20 +225,10 @@ gold-trading-bot/
 - Verify Python version: `python --version` (should be 3.8+)
 - Look for error messages in the console
 
-**State file corruption**
-- Delete `bot_state_v3.json` to reset daily stats
-- The file will be recreated automatically
-
 ## 📝 State Management
 
-The bot maintains state in `bot_state_v3.json`:
-- Starting balance
-- Daily trade count
-- Win/loss statistics
-- Current P&L
-- Last trade timing
-
-State automatically resets at 8:00 AM UK time each trading day.
+The bot maintains state **in memory only** while running (no JSON logging/state file is written).
+Daily stats and limits are recalculated from MT5 history and reset at 8:00 AM UK time each trading day.
 
 ## 🔐 Security Notes
 
