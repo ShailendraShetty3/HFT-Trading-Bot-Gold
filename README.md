@@ -75,7 +75,7 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
 1. **Download the latest release**
    ```bash
    # Visit releases page and download, or use wget:
-   wget https://github.com/yourusername/gold-trading-bot/archive/refs/tags/v1.0.0.zip
+   wget https://github.com/Morticuss/Gold-trading-bot/archive/refs/tags/v1.0.0.zip
    unzip v1.0.0.zip
    cd gold-trading-bot-1.0.0
    ```
@@ -95,7 +95,7 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
 If you want to contribute or track updates:
 
 ```bash
-git clone https://github.com/yourusername/gold-trading-bot.git
+git clone https://github.com/Morticuss/Gold-trading-bot.git
 cd gold-trading-bot
 pip install -r requirements.txt
 python gold_bot.py
