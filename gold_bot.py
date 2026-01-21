@@ -5,6 +5,8 @@ from datetime import datetime, time, timedelta
 import time as time_module
 import pytz
 import sys
+import os
+import csv
 from dataclasses import dataclass
 from typing import Optional, Literal
 
@@ -28,6 +30,9 @@ class GoldBot:
         self.last_bearish_score = 0.0
         self.last_rejection_reasons = []
         self._last_sizing_rejection = None
+        self.journal_file = "trade_journal.csv"
+        self._logged_positions = set()
+
 
         
         # Risk management
@@ -68,6 +73,7 @@ class GoldBot:
         
         # Position tracking
         self._position_cache = {}
+
 
     def _price_to_points(self, price_delta: float) -> float:
         """Convert a price delta to 'points' using the symbol's point size (correct for XAUUSD digits)."""
@@ -889,6 +895,46 @@ class GoldBot:
             return True, "Trail_200pts"
 
         return False, ""
+    
+    def _log_closed_trade(self, deal):
+        if deal.position in self._logged_positions:
+            return
+
+        self._logged_positions.add(deal.position)
+        file_exists = os.path.isfile(self.journal_file)
+
+        with open(self.journal_file, "a", newline="") as f:
+            writer = csv.writer(f)
+
+            if not file_exists:
+                writer.writerow([
+                    "date",
+                    "time",
+                    "symbol",
+                    "direction",
+                    "entry_price",
+                    "stop_loss",
+                    "take_profit",
+                    "exit_price",
+                    "profit",
+                    "result",
+                    "position_id"
+                ])
+
+            writer.writerow([
+                datetime.fromtimestamp(deal.time, tz=self.uk_tz).date().isoformat(),
+                datetime.fromtimestamp(deal.time, tz=self.uk_tz).time().strftime("%H:%M:%S"),
+                deal.symbol,
+                "BUY" if deal.type == mt5.DEAL_TYPE_SELL else "SELL",
+                deal.price_position,
+                deal.sl,
+                deal.tp,
+                deal.price,
+                round(deal.profit, 2),
+                "WIN" if deal.profit > 0 else "LOSS",
+                deal.position
+            ])
+
     def _sync_deals_to_state(self):
         """Process new closed deals and update state"""
         try:
@@ -924,27 +970,31 @@ class GoldBot:
                 
                 # Only count exit deals (not entries)
                 if deal.entry == mt5.DEAL_ENTRY_OUT:
-                    # Avoid double-counting the same position
+                     # Avoid double-counting the same position
                     if deal.position in processed_positions:
                         continue
-                    
+
                     processed_positions.add(deal.position)
-                    
+
+                    # NEW: journal the trade (permanent, once ever)
+                    self._log_closed_trade(deal)
+
                     # Accumulate profit
                     daily_profit += deal.profit
-                    
+
                     # Track last result for cooldown logic
                     if deal.profit > 0:
                         last_deal_result = "win"
                     elif deal.profit < 0:
                         last_deal_result = "loss"
-                    
+
                     daily_trades += 1
-                    
+
                     # Track the most recent deal time
                     deal_time = datetime.fromtimestamp(deal.time, tz=self.uk_tz)
                     if last_deal_time is None or deal_time > last_deal_time:
                         last_deal_time = deal_time
+
             
             # Update state with recalculated values
             self.state['profit'] = daily_profit
