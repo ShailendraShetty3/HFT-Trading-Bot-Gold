@@ -1,0 +1,74 @@
+# Bot state and logs
+bot_state*.json
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Sensitive data
+.env
+secrets.json
+config.json
+credentials.json
+
+# MetaTrader files
+*.ex5
+*.mq5
+Bases/
+MQL5/
+Profiles/
+
+# Test files
+test_*.py
+*_test.py
+
+# Documentation builds
+docs/_build/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Backup files
+*.bak
+*.backup
+backup/
