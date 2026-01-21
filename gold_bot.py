@@ -524,7 +524,7 @@ class GoldBot:
         try:
             df_htf = (
                 df.set_index("time")[["high", "low", "close"]]
-                .resample("15T")
+                .resample("15min")
                 .agg({"high": "max", "low": "min", "close": "last"})
                 .dropna()
             )
