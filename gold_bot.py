@@ -552,22 +552,10 @@ class GoldBot:
         
         lot = (acc.equity * (risk_pct / 100)) / (sl_distance * 100)
         lot = max(self.min_lot, min(round(lot, 2), self.max_lot))
+        broker_min_lot = mt5.symbol_info(self.symbol).volume_min
+        lot = max(broker_min_lot, lot)
         
         # Account-based lot limits (safer for all balances)
-        if acc.equity < 500:
-            lot = min(lot, 0.01)
-        elif acc.equity < 1000:
-            lot = min(lot, 0.02)
-        elif acc.equity < 2500:
-            lot = min(lot, 0.05)
-        elif acc.equity < 5000:
-            lot = min(lot, 0.08)
-        elif acc.equity < 10000:
-            lot = min(lot, 0.15)
-        elif acc.equity < 25000:
-            lot = min(lot, 0.20)
-        elif acc.equity < 50000:
-            lot = min(lot, 0.25)
         
         return TradeSignal(
             direction=direction,
@@ -635,20 +623,17 @@ class GoldBot:
             self._save_state()
     
     def _should_emergency_exit(self, pos, current_pnl_pct: float, peak_pnl_pct: float) -> tuple[bool, str]:
-        # Calculate price movement percentage
         if pos.type == mt5.POSITION_TYPE_BUY:
             price_movement = ((pos.price_current - pos.price_open) / pos.price_open) * 100
         else:
             price_movement = ((pos.price_open - pos.price_current) / pos.price_open) * 100
         
-        # Emergency exit on rapid loss
         if current_pnl_pct < -0.6:
             if price_movement < -0.2:
                 return True, "Emergency_RapidLoss"
         
-        # Exit if profit fully reversed
         if peak_pnl_pct > 0.4:
-            if current_pnl_pct < -0.1:
+            if current_pnl_pct < peak_pnl_pct * -0.25:
                 return True, "ProfitReversed"
         
         return False, ""
@@ -663,38 +648,38 @@ class GoldBot:
 
         if pos.type == mt5.POSITION_TYPE_BUY:
             progress = (current - entry) / (tp - entry)
+            pips_profit = (current - entry) * 10000
         else:
             progress = (entry - current) / (entry - tp)
+            pips_profit = (entry - current) * 10000
 
         progress = max(0.0, min(progress, 1.2))
 
         cache = self._position_cache.setdefault(pos.ticket, {})
-        max_progress = cache.get("max_progress", progress)
+        max_pips = cache.get("max_pips", pips_profit)
 
-        if progress > max_progress:
-            cache["max_progress"] = progress
-            return False, ""
+        if pips_profit > max_pips:
+            cache["max_pips"] = pips_profit
+            max_pips = pips_profit
 
-        retrace = max_progress - progress
+        pips_retrace = max_pips - pips_profit
 
         entry_time = self._position_cache[pos.ticket].get("entry_time")
         if entry_time:
             age_min = (datetime.now() - entry_time).total_seconds() / 60
 
             if age_min >= self.time_decay_minutes:
-                if progress >= self.min_progress_after_decay:
+                if pips_profit >= 15:
                     return True, "TimeDecay"
 
-
-        # === REALISTIC TRAILING LOGIC ===
-        if max_progress >= 0.80 and retrace >= 0.10:
-            return True, "Trail_80"
-        if max_progress >= 0.60 and retrace >= 0.15:
-            return True, "Trail_60"
-        if max_progress >= 0.40 and retrace >= 0.20:
-            return True, "Trail_40"
-        if max_progress >= 0.30 and retrace >= 0.25:
-            return True, "Trail_30"
+        if max_pips >= 80 and pips_retrace >= 15:
+            return True, "Trail_80pips"
+        if max_pips >= 50 and pips_retrace >= 12:
+            return True, "Trail_50pips"
+        if max_pips >= 30 and pips_retrace >= 10:
+            return True, "Trail_30pips"
+        if max_pips >= 20 and pips_retrace >= 8:
+            return True, "Trail_20pips"
 
         return False, ""
     def _sync_deals_to_state(self):
@@ -977,6 +962,16 @@ class GoldBot:
             print("Failed to get account info")
             mt5.shutdown()
             return
+        
+        if acc.equity < 50:
+            print("\n" + "="*70)
+            print("WARNING: Account equity below £50 minimum recommended")
+            print("Consider depositing more or using a demo account")
+            print("="*70)
+            response = input("\nContinue anyway? (yes/no): ")
+            if response.lower() != 'yes':
+                mt5.shutdown()
+                return
         
         if self.state["starting_balance"] == 0:
             self.state["starting_balance"] = acc.equity
