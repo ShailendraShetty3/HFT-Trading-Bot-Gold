@@ -27,9 +27,7 @@ class GoldBot:
         self.last_bullish_score = 0.0
         self.last_bearish_score = 0.0
         self.last_rejection_reasons = []
-        self.last_bullish_score = 0.0
-        self.last_bearish_score = 0.0
-        self.last_rejection_reasons = []
+        self._last_sizing_rejection = None
 
         
         # Risk management
@@ -610,7 +608,16 @@ class GoldBot:
             account_equity=acc.equity,
         )
         if lot is None:
-            self.last_rejection_reasons.append("Position sizing failed (lot calculation returned None - check risk limits)")
+            # Provide detailed rejection reason
+            if self._last_sizing_rejection:
+                rej = self._last_sizing_rejection
+                self.last_rejection_reasons.append(
+                    f"Position sizing failed: Min lot (0.01) would risk {rej['min_lot_risk']:.2f}% "
+                    f"(cap: {self.max_single_trade_risk_pct_cap}%) | "
+                    f"Account: £{rej['account_equity']:.2f} | SL distance: ${rej['stop_loss_distance']:.2f}"
+                )
+            else:
+                self.last_rejection_reasons.append("Position sizing failed (lot calculation returned None - check risk limits)")
             return None
         
         return TradeSignal(
@@ -693,6 +700,14 @@ class GoldBot:
         if account_equity > 0:
             risk_pct_actual = (actual_risk / account_equity) * 100.0
             if risk_pct_actual > self.max_single_trade_risk_pct_cap:
+                # Store rejection reason for diagnostics
+                self._last_sizing_rejection = {
+                    "requested_risk_pct": (risk_money / account_equity) * 100.0,
+                    "actual_risk_pct": risk_pct_actual,
+                    "min_lot_risk": (vol_min * risk_per_lot / account_equity) * 100.0,
+                    "stop_loss_distance": sl_dist,
+                    "account_equity": account_equity
+                }
                 return None
 
         return round(lot, 2)
