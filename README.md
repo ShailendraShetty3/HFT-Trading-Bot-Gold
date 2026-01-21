@@ -55,7 +55,7 @@ An advanced automated forex trading bot for gold (XAUUSD) using MetaTrader 5 wit
 
 1. **Download the latest release**
    - Go to the [Releases page](../../releases)
-   - Download `Gold Trading Bot.zip` (or `Source code (zip)`) from the latest release (v1.1.0 or newer)
+   - Download `Source code (zip)` from the latest release (v1.1.0 or newer)
    - Extract the ZIP file to your desired location
 
 2. **Install MetaTrader 5**
