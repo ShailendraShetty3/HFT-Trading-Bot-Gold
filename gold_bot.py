@@ -44,7 +44,7 @@ class GoldBot:
         self.max_lot = 0.5
         # Hard safety cap: if the smallest allowed lot would risk more than this % of equity, skip.
         # Tuned for brokers like Vantage where XAUUSD min lot is 0.01 and tick economics are sizable.
-        self.max_single_trade_risk_pct_cap = 1.5
+        self.max_single_trade_risk_pct_cap = 5
         self.tp_compression_min = 0.35
         self.tp_compression_max = 0.55
 
@@ -649,6 +649,10 @@ class GoldBot:
         if equity <= 0:
             return base
         scale = min(1.0, max(0.25, (equity / 500.0) ** 0.5))
+        if equity > 200:
+            scale = max(0.5, min(1.0, (equity - 50) / 150))
+        else:
+            scale = 1.0
         return base * scale
 
     def _calc_lot_from_risk(
