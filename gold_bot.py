@@ -154,31 +154,29 @@ class GoldBot:
         uk_now = self._get_uk_time()
         
         # Weekend check
-        if uk_now.weekday() >= 5:
+        if uk_now.weekday() >= 5:  # Saturday or Sunday
             return False
         
-        # Friday close
+        # Friday close at 22:00
         if uk_now.weekday() == 4 and uk_now.time() >= time(22, 0):
             return False
         
-        current_time = uk_now.time()
-        return time(0, 0) <= current_time <= time(23, 0)
+        # Market is open 24/5 - no need to check specific hours during weekdays
+        return True
     
     def _get_market_status(self) -> str:
         uk_now = self._get_uk_time()
         current_time = uk_now.time()
         
-        if uk_now.weekday() == 5:
+        if uk_now.weekday() == 5:  # Saturday
             return "WEEKEND (Saturday)"
-        elif uk_now.weekday() == 6:
+        elif uk_now.weekday() == 6:  # Sunday
             if current_time < time(23, 0):
                 return "WEEKEND (Sunday - Opens 23:00)"
             else:
                 return "OPENING"
-        elif uk_now.weekday() == 4 and current_time >= time(22, 0):
+        elif uk_now.weekday() == 4 and current_time >= time(22, 0):  # Friday after 22:00
             return "CLOSED (Friday)"
-        elif current_time >= time(23, 0) or current_time < time(0, 0):
-            return "PAUSED (23:00-00:00)"
         else:
             return "ACTIVE"
     
