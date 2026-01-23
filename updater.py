@@ -180,6 +180,17 @@ class BotUpdater:
     
     def run(self):
         """Main update check and install flow"""
+        current_version = self.get_current_version()
+        is_first_run = (current_version == "0.0.0")
+        
+        # Silent first run - just set up version tracking
+        if is_first_run:
+            update_info = self.check_for_updates()
+            if update_info:
+                self.save_version(update_info['latest_version'])
+            return True
+        
+        # Normal update check for existing users
         print("="*70)
         print("GOLD TRADING BOT - UPDATE CHECKER".center(70))
         print("="*70)
@@ -192,14 +203,7 @@ class BotUpdater:
             return True
         
         if not update_info['available']:
-            current = update_info['current_version']
-            if current == "0.0.0":
-                # First time setup
-                print(f"Setting up version tracking...")
-                self.save_version(update_info['latest_version'])
-                print(f"✓ Current version: {update_info['latest_version']}\n")
-            else:
-                print(f"✓ You have the latest version ({current})\n")
+            print(f"✓ You have the latest version ({current_version})\n")
             return True
         
         # New update available
