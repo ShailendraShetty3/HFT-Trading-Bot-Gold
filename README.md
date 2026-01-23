@@ -3,6 +3,7 @@
 An automated forex trading bot for gold (XAUUSD) using MetaTrader 5 with technical analysis, risk management, and position monitoring.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-2.0.1-blue)
 ![Status](https://img.shields.io/badge/status-active-success)
 
 ## Disclaimer
@@ -29,6 +30,7 @@ An automated forex trading bot for gold (XAUUSD) using MetaTrader 5 with technic
 - Maximum daily trade limits
 - Profit target and drawdown protection
 - Spread filtering to avoid expensive trades
+- Hard 5% risk cap per trade for small accounts
 
 ### Entry and Exit Logic
 - Multi-factor scoring system (minimum 4.5/12 required)
@@ -40,12 +42,21 @@ An automated forex trading bot for gold (XAUUSD) using MetaTrader 5 with technic
 - Time-decay exits for stale positions
 - Win/loss cooldown periods
 
+### Session Management (NEW in v2.0.1)
+- **Restricted to London and NY sessions only**
+- Trading Hours: 07:00-19:00 UK time (Monday-Friday)
+- Blocks Asian session (overnight) trading completely
+- Focuses on high-liquidity periods for better trade quality
+- Tighter spreads during active sessions
+- Better trend consistency in major market hours
+
 ### Monitoring
 - Live position tracking with P&L percentage
 - Market session awareness (London/NY)
 - Comprehensive status dashboard
 - Signal strength diagnostics
 - Rejection reason logging
+- Real-time spread monitoring
 
 ## Requirements
 
@@ -70,9 +81,9 @@ The batch file will automatically install dependencies and launch the bot.
 
 ```bash
 # Download and extract the latest release
-wget https://github.com/Morticuss/Gold-trading-bot/archive/refs/tags/v1.1.0.zip
-unzip v1.1.0.zip
-cd gold-trading-bot-1.1.0
+wget https://github.com/Morticuss/Gold-trading-bot/archive/refs/tags/v2.0.1.zip
+unzip v2.0.1.zip
+cd gold-trading-bot-2.0.1
 
 # Install dependencies
 pip3 install -r requirements.txt
@@ -160,6 +171,7 @@ Trades are rejected if:
 - Spread exceeds maximum allowed
 - ADX <18 with choppy conditions
 - Minimum lot would exceed risk cap
+- Outside trading hours (before 07:00 or after 19:00 UK time)
 
 ### Position Management
 
@@ -186,11 +198,27 @@ Note: For XAUUSD, 1 point = 0.01 price movement (e.g., 150 points = $1.50)
 - Profit reverses 25% after reaching 0.4% gain
 - Time-decay after 10 minutes if progress stalls and profit ≥150 points
 
-## Trading Hours
+## Trading Hours (v2.0.1)
 
-- Active Sessions: London Open, Mid, NY Open, Mid
-- Trading Hours: 24/5 (Monday 00:00 - Friday 22:00 UK time)
-- Weekend Handling: Automatically pauses
+**Active Trading Window:**
+- **Monday-Friday**: 07:00-19:00 UK time only
+- **London Open**: 07:00-10:00
+- **London Mid**: 10:00-13:00
+- **NY Open**: 13:00-16:00
+- **NY Mid**: 16:00-19:00
+
+**Blocked Sessions:**
+- **Asian Session**: 19:00-07:00 UK time (no overnight trading)
+- **Weekends**: Saturday-Sunday (closed)
+
+**Why London/NY Only?**
+- Higher liquidity = tighter spreads
+- Better price action and trends
+- Reduced slippage
+- More reliable signals
+- Avoids choppy Asian session overnight
+
+The bot will display "WAITING FOR MARKET (CLOSED)" outside these hours.
 
 ## State Management
 
@@ -220,6 +248,12 @@ The bot maintains state in memory only while running. Daily statistics are calcu
 - Enable "Allow DLL imports"
 - Verify algo trading is allowed on your account
 
+### Bot Not Trading During Day
+- Check you're within 07:00-19:00 UK time
+- Verify MT5 is showing correct time
+- Check signal diagnostics for rejection reasons
+- Ensure spreads are within limits
+
 ### Dependencies Won't Install
 - Run Command Prompt as Administrator
 - Navigate to bot folder
@@ -240,17 +274,26 @@ The bot displays:
 - Cooldown timers and daily trade count
 - Signal diagnostics and rejection reasons
 - Daily profit/loss statistics
+- Current spread in points
+- Trading hours status (ACTIVE/CLOSED)
 
 ## First-Time Setup Checklist
 
-- Python 3.8+ installed
-- MetaTrader 5 installed and running
-- MT5 account logged in (demo recommended)
-- XAUUSD visible in Market Watch
-- AutoTrading enabled in MT5
-- DLL imports enabled in MT5
-- Bot extracted and dependencies installed
-- Bot shows "SCANNING FOR SIGNALS" status
+- [ ] Python 3.8+ installed
+- [ ] MetaTrader 5 installed and running
+- [ ] MT5 account logged in (demo recommended for testing)
+- [ ] XAUUSD visible in Market Watch
+- [ ] AutoTrading enabled in MT5
+- [ ] DLL imports enabled in MT5
+- [ ] Bot extracted and dependencies installed
+- [ ] Current time is between 07:00-19:00 UK time
+- [ ] Bot shows "SCANNING FOR SIGNALS" status
+
+## Version History
+
+- **v2.0.1** (2026-01-24): Added London/NY session restriction (07:00-19:00 UK time)
+- **v2.0.0** (2026-01-24): Major risk management overhaul, signal quality enhancement
+- **v1.0.0** (2026-01-21): Initial release
 
 ## Contributing
 

@@ -146,17 +146,24 @@ class GoldBot:
     
     def _is_market_open(self) -> bool:
         uk_now = self._get_uk_time()
+        current_time = uk_now.time()
         
         # Weekend check
         if uk_now.weekday() >= 5:  # Saturday or Sunday
             return False
         
-        # Friday close at 22:00
-        if uk_now.weekday() == 4 and uk_now.time() >= time(22, 0):
+        # Friday close at 19:00 (end of NY session)
+        if uk_now.weekday() == 4 and current_time >= time(19, 0):
             return False
         
-        # Market is open 24/5 - no need to check specific hours during weekdays
-        return True
+        # ONLY TRADE DURING LONDON AND NY SESSIONS
+        # London: 7:00 - 16:00
+        # NY: 13:00 - 19:00
+        # Combined window: 7:00 - 19:00 UK time
+        if time(7, 0) <= current_time < time(19, 0):
+            return True
+        
+        return False
     
     def _get_market_status(self) -> str:
         uk_now = self._get_uk_time()

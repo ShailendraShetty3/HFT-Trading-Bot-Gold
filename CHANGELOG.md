@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.0.1] - 2026-01-24
+
+### Session Restriction Update
+
+#### Trading Hours Enhancement
+- **Restricted trading to London and NY sessions only (7:00-19:00 UK time)**
+- Blocks Asian session trading completely (no more overnight trades)
+- Improved trade quality by focusing on high-liquidity periods
+- Tighter spreads during active sessions
+- Better trend consistency in major market hours
+
+#### Market Hours
+- **Active Trading**: Monday-Thursday 07:00-19:00, Friday 07:00-19:00 UK time
+- **Blocked Sessions**: Asian session (19:00-07:00 UK time)
+- **Weekend**: Remains closed Saturday-Sunday
+
+#### Benefits
+- Eliminates low-liquidity overnight trading
+- Reduces spread costs during Asian session
+- Focuses on strongest trending periods
+- Better signal quality during London/NY overlap
+- Improved risk-reward ratios
+
+---
+
 ## [2.0.0] - 2026-01-24
 
 ### Major Update - Advanced Risk Management and Signal Filtering
