@@ -202,6 +202,14 @@ class BotUpdater:
             print("Continuing with current version...\n")
             return True
         
+        # Check for version tampering (local version higher than GitHub)
+        if self._compare_versions(current_version, update_info['latest_version']):
+            print(f"⚠️  Warning: Local version ({current_version}) is higher than GitHub ({update_info['latest_version']})")
+            print(f"   Resetting to latest official version: {update_info['latest_version']}")
+            self.save_version(update_info['latest_version'])
+            print(f"✓ Version reset complete\n")
+            return True
+        
         if not update_info['available']:
             print(f"✓ You have the latest version ({current_version})\n")
             return True
