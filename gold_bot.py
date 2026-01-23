@@ -173,13 +173,27 @@ class GoldBot:
             return "WEEKEND (Saturday)"
         elif uk_now.weekday() == 6:  # Sunday
             if current_time < time(23, 0):
-                return "WEEKEND (Sunday - Opens 23:00)"
+                return "WEEKEND (Sunday - Opens 07:00 Monday)"
             else:
-                return "OPENING"
-        elif uk_now.weekday() == 4 and current_time >= time(22, 0):  # Friday after 22:00
-            return "CLOSED (Friday)"
+                return "OPENING SOON"
+        elif uk_now.weekday() == 4 and current_time >= time(19, 0):  # Friday after 19:00
+            return "CLOSED (Friday - Opens 07:00 Monday)"
+        elif time(7, 0) <= current_time < time(19, 0):
+            # Show which session we're in
+            hour = current_time.hour
+            if 7 <= hour < 10:
+                return "ACTIVE (London Open)"
+            elif 10 <= hour < 13:
+                return "ACTIVE (London Mid)"
+            elif 13 <= hour < 16:
+                return "ACTIVE (NY Open)"
+            elif 16 <= hour < 19:
+                return "ACTIVE (NY Mid)"
+            else:
+                return "ACTIVE"
         else:
-            return "ACTIVE"
+            # Outside trading hours (Asian session)
+            return "CLOSED (Asian Session - Opens 07:00)"
     
     def _can_trade(self) -> bool:
         if not self.state["last_trade_time"]:
