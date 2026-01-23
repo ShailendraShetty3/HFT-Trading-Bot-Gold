@@ -33,7 +33,7 @@ if not exist "requirements.txt" (
     echo Continuing without dependency check...
     echo.
     timeout /t 3 >nul
-    goto :run_bot
+    goto :check_updates
 )
 
 echo [INFO] Checking/Installing dependencies...
@@ -52,6 +52,22 @@ if %errorlevel% neq 0 (
 ) else (
     echo [OK] All dependencies ready
     echo.
+)
+
+:check_updates
+REM Run updater if it exists
+if exist "updater.py" (
+    python updater.py
+    if %errorlevel% neq 0 (
+        color 0E
+        echo [WARNING] Update check failed, continuing anyway...
+        echo.
+        timeout /t 2 >nul
+    )
+) else (
+    echo [WARNING] updater.py not found, skipping update check
+    echo.
+    timeout /t 2 >nul
 )
 
 :run_bot

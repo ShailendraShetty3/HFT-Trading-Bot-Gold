@@ -2,6 +2,9 @@
 bot_state*.json
 *.log
 
+# Version tracking (auto-generated)
+.bot_version
+
 # Python
 __pycache__/
 *.py[cod]
@@ -72,3 +75,8 @@ coverage.xml
 *.bak
 *.backup
 backup/
+backup_*/
+
+# Update system files
+temp_update/
+update.zip
