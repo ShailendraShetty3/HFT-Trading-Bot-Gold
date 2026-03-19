@@ -425,4 +425,5 @@ For issues and questions:
 
 Remember: Past performance is not indicative of future results. Trade responsibly.
 #   H F T - T r a d i n g - B o t - G o l d  
+ #   H F T - T r a d i n g - B o t - G o l d  
  
