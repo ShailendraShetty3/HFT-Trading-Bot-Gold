@@ -239,30 +239,30 @@ class GoldBotHFT:
         if not tick:
             return None
         
-        # === HFT: SIMPLIFIED SCORING FOR FASTER DECISIONS ===
+        # === SCORING SYSTEM ===
         bullish_score = 0
         bearish_score = 0
         
-        # EMA alignment (faster EMAs)
+        # EMA alignment
         if last['ema_5'] > last['ema_10']:
             bullish_score += 2
         if last['ema_5'] < last['ema_10']:
             bearish_score += 2
         
-        # MACD (simplified)
+        # MACD momentum
         if last['macd_hist'] > 0 and last['macd_hist'] > prev['macd_hist']:
             bullish_score += 2
         if last['macd_hist'] < 0 and last['macd_hist'] < prev['macd_hist']:
             bearish_score += 2
         
-        # RSI (wider range for HFT)
-        if 40 < last['rsi'] < 60:
-            bullish_score += 1
-            bearish_score += 1
-        elif last['rsi'] < 35:
+        # RSI conditions
+        if last['rsi'] < 35:
             bullish_score += 2
         elif last['rsi'] > 65:
             bearish_score += 2
+        elif 40 < last['rsi'] < 60:
+            bullish_score += 1
+            bearish_score += 1
         
         # Volume spike
         if last['tick_volume'] > last['vol_ma'] * 1.2:
@@ -277,27 +277,10 @@ class GoldBotHFT:
         if last['momentum'] < 0:
             bearish_score += 1
         
-        # === HFT: LOWER THRESHOLD FOR MORE TRADES ===
-        min_score = 3.0  # Lowered from 4.5
+        min_score = 3.0
         
-        self.last_bullish_score = bullish_score
-        self.last_bearish_score = bearish_score
-        self.last_rejection_reasons = []
-        
-        # if bullish_score >= min_score and bullish_score > bearish_score:
-        #     direction = "BUY"
-        #     strength = min(bullish_score / 8, 1.0)
-        # elif bearish_score >= min_score and bearish_score > bullish_score:
-        #     direction = "SELL"
-        #     strength = min(bearish_score / 8, 1.0)
-        # else:
-        #     self.last_rejection_reasons.append(f"Scores: BUY={bullish_score:.1f}, SELL={bearish_score:.1f} (min {min_score})")
-        #     return None
-
-
-
         print(f"\n🔍 SIGNAL CHECK - BUY: {bullish_score}, SELL: {bearish_score}, min: {min_score}")
-
+        
         if bullish_score >= min_score and bullish_score > bearish_score:
             direction = "BUY"
             strength = min(bullish_score / 8, 1.0)
@@ -307,55 +290,85 @@ class GoldBotHFT:
             strength = min(bearish_score / 8, 1.0)
             print(f"✅ SELL signal PASSED - {bearish_score} > {bullish_score}")
         else:
-            self.last_rejection_reasons.append(f"Scores: BUY={bullish_score:.1f}, SELL={bearish_score:.1f} (min {min_score})")
             print(f"❌ No signal: BUY={bullish_score}, SELL={bearish_score}")
             return None
-
-        print(f"➡️ Direction: {direction}, Strength: {strength}")
-
-
         
-        # === HFT: SIMPLIFIED ANTI-LATE ENTRY ===
+        print(f"➡️ Direction: {direction}, Strength: {strength:.2f}")
+        
+        # === ANTI-LATE ENTRY ===
         price_change_3bars = ((df['close'].iloc[-1] - df['close'].iloc[-3]) / df['close'].iloc[-3]) * 100
         if direction == "BUY" and price_change_3bars > 0.1:
-            self.last_rejection_reasons.append(f"Anti-late: Price moved up {price_change_3bars:.2f}%")
+            print(f"❌ Anti-late: Price moved up {price_change_3bars:.2f}%")
             return None
         if direction == "SELL" and price_change_3bars < -0.1:
-            self.last_rejection_reasons.append(f"Anti-late: Price moved down {abs(price_change_3bars):.2f}%")
+            print(f"❌ Anti-late: Price moved down {abs(price_change_3bars):.2f}%")
             return None
         
-        # === SPREAD FILTER (Adjusted for Valetax) ===
-        spread_pts = self._current_spread_points()
-        if spread_pts is not None:
-            if spread_pts > 35:  # Hard cap - anything above 35 is too high
-                self.debug_signal_lines = ["SIGNAL CHECK (NO TRADE)", f"✖ Spread too high: {spread_pts:.1f} pts > 35"]
+        # === M5 TREND FILTER ===
+        m5_rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M5, 0, 20)
+        if m5_rates is not None and len(m5_rates) > 10:
+            m5_close = pd.Series([r[4] for r in m5_rates])
+            m5_ema9 = m5_close.ewm(span=9).mean().iloc[-1]
+            m5_ema21 = m5_close.ewm(span=21).mean().iloc[-1]
+            
+            if direction == "BUY" and m5_ema9 < m5_ema21:
+                print("❌ M5 trend bearish - skipping BUY")
                 return None
-            elif spread_pts > 25:  # High but acceptable - warn but allow
-                print(f"⚠️ High spread: {spread_pts:.1f} pts - trading with reduced risk")
-                # Reduce position size for high spread
-                self.base_risk_pct = 0.3  # Temporary reduction
-            else:
-                self.base_risk_pct = 0.5  # Normal risk
-                
-        # === HFT: TIGHTER SL/TP FOR MICRO MOVES ===
+            if direction == "SELL" and m5_ema9 > m5_ema21:
+                print("❌ M5 trend bullish - skipping SELL")
+                return None
+            print(f"✅ M5 trend confirmed")
+        
+        # === SPREAD FILTER ===
+        spread_pts = self._current_spread_points()
+        if spread_pts is not None and spread_pts > 35:
+            print(f"❌ Spread too high: {spread_pts:.1f} pts")
+            return None
+        
+        # === OPTIMIZED SL/TP CALCULATION ===
         atr = last['atr']
         entry = tick.ask if direction == "BUY" else tick.bid
         
-        # Micro-scalping SL/TP (much tighter)
-        sl_distance = atr * 0.4  # Tight stop
-        tp_distance = atr * 0.8  # Tight target
+        # DYNAMIC SL/TP BASED ON STRENGTH AND VOLATILITY
+        if strength > 0.7:
+            sl_distance = atr * 0.5   # Tighter stop for strong signals
+            tp_distance = atr * 1.8   # 3.6x reward (1:3.6 R:R)
+        elif strength > 0.5:
+            sl_distance = atr * 0.6
+            tp_distance = atr * 1.5   # 2.5x reward (1:2.5 R:R)
+        else:
+            sl_distance = atr * 0.8
+            tp_distance = atr * 1.2   # 1.5x reward (1:1.5 R:R)
         
         sl = entry - sl_distance if direction == "BUY" else entry + sl_distance
         tp = entry + tp_distance if direction == "BUY" else entry - tp_distance
         
-        # === LOT SIZING ===
+        print(f"📊 R:R Ratio: {tp_distance/sl_distance:.2f}")
+        
+        # === DYNAMIC RISK SIZING ===
         acc = mt5.account_info()
         if not acc:
             return None
         
-        risk_pct = self._risk_pct_for_equity(acc.equity, strength)
+        # Risk based on signal strength
+        if strength > 0.7:
+            risk_pct = 1.0
+            print(f"💪 Strong signal - Risk: {risk_pct}%")
+        elif strength > 0.5:
+            risk_pct = 0.7
+            print(f"📈 Medium signal - Risk: {risk_pct}%")
+        else:
+            risk_pct = 0.5
+            print(f"📉 Weak signal - Risk: {risk_pct}%")
+        
+        # Reduce risk for high spread
+        if spread_pts is not None and spread_pts > 25:
+            risk_pct = risk_pct * 0.7
+            print(f"⚠️ High spread adjustment: Risk reduced to {risk_pct:.2f}%")
+        
         risk_money = acc.equity * (risk_pct / 100.0)
         
+        # Calculate lot size
         lot = self._calc_lot_from_risk(
             entry_price=entry,
             stop_loss=sl,
@@ -363,19 +376,11 @@ class GoldBotHFT:
             account_equity=acc.equity,
         )
         if lot is None:
+            print("❌ Lot calculation failed")
             return None
         
-        # return TradeSignal(
-        #     direction=direction,
-        #     strength=strength,
-        #     atr=atr,
-        #     entry_price=entry,
-        #     stop_loss=sl,
-        #     take_profit=tp,
-        #     lot_size=lot
-        # )
-
         print(f"🎯 TradeSignal CREATED: {direction} at {entry:.2f}, SL: {sl:.2f}, TP: {tp:.2f}, lot: {lot}")
+        
         return TradeSignal(
             direction=direction,
             strength=strength,
@@ -385,7 +390,6 @@ class GoldBotHFT:
             take_profit=tp,
             lot_size=lot
         )
-
     
     def _risk_pct_for_equity(self, equity: float, strength: float) -> float:
         strength = max(0.0, min(float(strength), 1.0))
@@ -525,14 +529,72 @@ class GoldBotHFT:
                 for pos in positions:
                     if pos.ticket not in self._position_cache:
                         self._position_cache[pos.ticket] = {
-                            "entry_time": self._get_uk_time()
+                            "entry_time": self._get_uk_time(),
+                            "peak_profit": 0.0
                         }
                     
-                    # HFT: Quick profit taking
-                    if pos.type == mt5.POSITION_TYPE_BUY and pos.price_current > pos.price_open * 1.001:
-                        self._close_position(pos, "QuickProfit")
-                    elif pos.type == mt5.POSITION_TYPE_SELL and pos.price_current < pos.price_open * 0.999:
-                        self._close_position(pos, "QuickProfit")
+                    # Track peak profit for trailing stops
+                    if pos.profit > self._position_cache[pos.ticket]["peak_profit"]:
+                        self._position_cache[pos.ticket]["peak_profit"] = pos.profit
+                    
+                    peak = self._position_cache[pos.ticket]["peak_profit"]
+                    
+                    # === TRAILING STOP LOSS ===
+                    # If profit > $2, trail stop to lock in gains
+                    if peak > 2.0:
+                        # Calculate new stop loss at 50% of peak profit
+                        trail_price = pos.price_open
+                        if pos.type == mt5.POSITION_TYPE_BUY:
+                            trail_price = pos.price_current - (peak * 0.5 / (pos.volume * 100))
+                        else:
+                            trail_price = pos.price_current + (peak * 0.5 / (pos.volume * 100))
+                        
+                        # Only move stop in profitable direction
+                        if (pos.type == mt5.POSITION_TYPE_BUY and trail_price > pos.sl) or \
+                        (pos.type == mt5.POSITION_TYPE_SELL and trail_price < pos.sl):
+                            # Modify stop loss
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": pos.ticket,
+                                "sl": trail_price,
+                                "tp": pos.tp,
+                                "symbol": self.symbol,
+                                "magic": self.magic,
+                            }
+                            mt5.order_send(request)
+                            print(f"🔹 Trailing stop moved to {trail_price:.2f}")
+                    
+                    # === PARTIAL PROFIT TAKING ===
+                    # Take 50% profit at $1.50
+                    if pos.profit > 1.5 and not hasattr(self._position_cache[pos.ticket], 'partial_taken'):
+                        # Close half position
+                        half_volume = round(pos.volume / 2, 2)
+                        if half_volume >= 0.01:
+                            tick = mt5.symbol_info_tick(self.symbol)
+                            close_price = tick.bid if pos.type == mt5.POSITION_TYPE_BUY else tick.ask
+                            close_request = {
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "symbol": self.symbol,
+                                "volume": half_volume,
+                                "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                                "position": pos.ticket,
+                                "price": close_price,
+                                "magic": self.magic,
+                                "comment": "PartialProfit",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": mt5.ORDER_FILLING_RETURN
+                            }
+                            result = mt5.order_send(close_request)
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                                self._position_cache[pos.ticket].partial_taken = True
+                                print(f"✅ Partial profit taken: ${pos.profit:.2f}")
+                    
+                    # === TIME-BASED EXIT ===
+                    # Close after 10 minutes regardless of profit
+                    age_minutes = (self._get_uk_time() - self._position_cache[pos.ticket]["entry_time"]).total_seconds() / 60
+                    if age_minutes > 10:
+                        self._close_position(pos, "TimeExit")
+                        print(f"⏰ Time exit after {age_minutes:.0f} minutes")
             
             self._sync_deals_to_state()
         except Exception as e:
